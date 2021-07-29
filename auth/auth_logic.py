@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, render_template, url_for
+from flask import Blueprint, request, jsonify, render_template, url_for, session
 import hashlib
 from datetime import datetime
 import ast
@@ -7,13 +7,15 @@ from jwcrypto import jwt, jwk
 import logging
 import json
 from auth import app
-from auth_utils import session, admin_auth, validate_token, preValidation, check_mail, randomPassword, \
+from auth_utils import session, admin_auth, validate_token, preValidation, OAuth2Validation, check_mail, randomPassword, \
     string_to_boolean, get_user_from_token, get_platform_name, get_platform_id, get_platform_ip, get_mail_from_token
 from DB_Model import init_db, drop_users_db, User, Registry, Platform, db
 from MailConfig import mail
 import requests
 from settings import Settings
 import pymongo
+from requests_oauthlib import OAuth2Session
+from flask.json import jsonify
 
 auth_logic = Blueprint('auth_page', __name__, template_folder='templates')
 
@@ -25,6 +27,32 @@ logger = logging.getLogger('REST API')
 
 # DB parameters
 mongoDBClient = pymongo.MongoClient("mongodb://database:27017/")
+
+# OAuth2 parameters
+client_id = "gx9xcim0JIddA3V8dr3TEqf0"
+client_secret = "YJ6OfMnGgCG6NYRpbLVQDTkRjqyGqKzoKXaFCCcs6Vbn3CFB"
+token_url = 'https://portal.fed4fire.eu/oauth/token'
+
+
+@auth_logic.route('/callback', methods=['GET'])
+def callback():
+    fed4fire = OAuth2Session(client_id, state=session['oauth_state'])
+    oauthtoken = fed4fire.fetch_token(token_url, client_secret=client_secret, authorization_response=request.url)
+
+    session['oauth_token'] = oauthtoken
+
+    def logic(token):
+
+        try:
+            new_action = Registry(username='OAuth2 User', action='OAuthCallback')  #TODO fix username fetch from fed4fires userinfo response
+            db.session.add(new_action)
+            db.session.commit()
+            return jsonify(result=token), 200
+
+        except Exception as e:
+            return jsonify(result=('Login fails: ' + str(e))), 400
+
+    return OAuth2Validation(logic)
 
 
 @auth_logic.route('/get_token', methods=['GET'])
