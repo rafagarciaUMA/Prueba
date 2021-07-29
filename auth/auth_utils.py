@@ -7,7 +7,8 @@ from jwcrypto import jwt
 from functools import wraps
 import ast
 from DB_Model import User, Registry, Rol, db
-from flask import session, jsonify
+from flask import session, jsonify, redirect
+from requests_oauthlib import OAuth2Session
 from datetime import datetime
 from settings import Settings
 
@@ -16,6 +17,9 @@ key = Settings().KEY
 get_platform_name = lambda: open("platform_name", "r").read().split()[0]
 get_platform_id = lambda: open("platformID", "r").read().split()[0]
 get_platform_ip = lambda: open("platform_ip", "r").read().split()[0]
+
+client_id = "gx9xcim0JIddA3V8dr3TEqf0"
+authorization_base_url = 'https://portal.fed4fire.eu/oauth/authorize'
 
 
 def preValidation(request, functional_part):
@@ -37,10 +41,32 @@ def preValidation(request, functional_part):
         return functional_part(token)
 
     elif data is None:
-        return jsonify(result='No user registered/active with that user/password'), 400
+        fed4fire = OAuth2Session(client_id)
+        authorization_url, state = fed4fire.authorization_url(authorization_base_url)
+
+        session['oauth_state'] = state
+        return redirect(authorization_url)  # Redirects to fed4fire Auth server, returns to /callback endpoint when finished
+
+        # return jsonify(result='No user registered/active with that user/password'), 400
 
     else:
         return jsonify(result='User ' + username + ' is not activated'), 400
+
+
+def OAuth2Validation(functional_part):
+    fed4fire = OAuth2Session(client_id, token=session['oauth_token'])
+    data = jsonify(fed4fire.post('https://portal.fed4fire.eu/oauth/introspect', fed4fire.token).json)
+    if data.active is True:
+        now = datetime.now()
+        Etoken = jwt.JWT(header={'alg': 'A256KW', 'enc': 'A256CBC-HS512'},
+                         claims={'oauth_token': fed4fire.token,
+                                 'timeout': datetime.timestamp(now) + Settings.Timeout})     #TODO Check how the userinfo endpoint from fed4fire serves the username to populate proper token. Fix ValidateToken accordingly
+
+        Etoken.make_encrypted_token(key)
+        token = Etoken.serialize()
+        return functional_part(token)
+    else:
+        return jsonify(result='OAuth2 token is not valid'), 400
 
 
 def auth(f):
@@ -129,6 +155,11 @@ def validate_token(token, request):
             else:
                 if metadata.get('platform_id') == get_platform_id():
                     return
+                if metadata.get('oauth_token') is not None:
+                    fed4fire = OAuth2Session(client_id=client_id, token=session['oauth_token'])
+                    data = jsonify(fed4fire.post('https://portal.fed4fire.eu/oauth/introspect', fed4fire.token).json)
+                    if data.active is True:
+                        return
         else:
             return 'Token expired'
         if data is not None:
